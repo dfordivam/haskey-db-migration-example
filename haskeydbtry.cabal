@@ -16,8 +16,9 @@ extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules: Code
-                   Schema
+  exposed-modules: 
+                   SchemaNew
+                   UserData
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.9 && <4.10
