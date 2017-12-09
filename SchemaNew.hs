@@ -20,7 +20,7 @@ import Control.Monad.Reader
 import Control.Monad.IO.Class (MonadIO, liftIO)
 
 import Data.BTree.Alloc (AllocM, AllocReaderM)
-import Data.BTree.Impure (Tree, insertTree, lookupTree, toList)
+import Data.BTree.Impure (Tree, insertTree, lookupTree, toList, insertTreeMany)
 import Data.BTree.Primitives (Value)
 import Data.Binary (Binary)
 import Data.Foldable (foldlM)
@@ -28,7 +28,7 @@ import Data.Int (Int64)
 import Data.Text (Text, unpack)
 import Data.Typeable (Typeable, Typeable1)
 import qualified Data.BTree.Impure as Tree
-
+import qualified Data.Map as Map
 import Database.Haskey.Alloc.Concurrent (Root)
 
 import GHC.Generics (Generic, Generic1)
@@ -60,9 +60,16 @@ data SchemaTree a = SchemaTree {
 -- instance Show1 SchemaTree
 deriving instance Show (SchemaTree CurrentSchema)
 instance Binary (SchemaTree CurrentSchema)
+deriving instance Show (SchemaTree OldSchema)
+instance Binary (SchemaTree OldSchema)
 
 data Schema = Schema
  { _schemaTree :: SchemaTree CurrentSchema
+ }
+  deriving (Generic, Typeable, Show)
+
+data SchemaOld = SchemaOld
+ { _schemaOldTree :: SchemaTree OldSchema
  }
   deriving (Generic, Typeable, Show)
 
@@ -70,8 +77,13 @@ instance Binary (Schema)
 instance Value (Schema)
 instance Root Schema
 
+instance Binary SchemaOld
+instance Value SchemaOld
+instance Root SchemaOld
+
 makeLenses ''SchemaTree
 makeLenses ''Schema
+makeLenses ''SchemaOld
 
   -- | Insert or update a tweet.
 insertTweet :: AllocM n => Int64 -> Tweet CurrentSchema -> Schema -> n Schema
@@ -86,7 +98,7 @@ emptySchema = Schema (SchemaTree Tree.empty Tree.empty)
 
 code :: IO ()
 code = do
-    let db = "haskey"
+    let db = "new_haskey"
     putStrLn $ "Using " ++ db
     main' db
 
@@ -114,7 +126,9 @@ runApp (AppT m) r = runHaskeyT (runReaderT m r)
 
 
 app :: App ()
-app = insertDefaultTweets >> printTweetsWithUser
+app =
+  -- insertDefaultTweets >>
+  printTweetsWithUser
 
 insertDefaultTweets :: App ()
 insertDefaultTweets = do
@@ -125,8 +139,8 @@ insertDefaultTweets = do
         foldlM (flip $ uncurry insertTweet) schema tweets
         >>= commit_
   where
-    users = [("foo", User "Foo"),
-             ("bar", User "Bar")]
+    users = [("foo", User "Foo" Nothing),
+             ("bar", User "Bar" Nothing)]
     tweets = [(1, Tweet "foo" "Hey, I'm Foo!" Tree.empty),
               (2, Tweet "bar" "Hey, I'm Bar!" Tree.empty),
               (3, Tweet "foo" "I like you, Bar!" Tree.empty)]
@@ -147,3 +161,34 @@ printTweetsWithUser = do
   -- where
   --   print' (Just user, tweet) = liftIO . putStrLn $ unpack (_userName user) ++ ": " ++ unpack (_tweetContent tweet) ++ (show $ _tweetReplies tweet)
   --   print' (Nothing  , tweet) = liftIO . putStrLn $ "?: " ++ unpack (_tweetContent tweet)
+
+migrateDB fp1 fp2 migFun = do
+    dbOld <- flip runFileStoreT defFileStoreConfig $
+        openConcurrentDb (concurrentHandles fp1) >>= \case
+            Just db -> return db
+
+    db <- flip runFileStoreT defFileStoreConfig $
+        openConcurrentDb (concurrentHandles fp2) >>= \case
+            Nothing -> createConcurrentDb (concurrentHandles fp2) emptySchema
+            Just db -> return db
+
+    migFun dbOld db
+
+migrateFun dbOld db = do
+  let readAction = do
+        us <- transactReadOnly $ (\r -> toList (r ^. schemaOldTree . schemaUsers))
+        ts <- transactReadOnly $ (\r -> toList (r ^. schemaOldTree . schemaTweets))
+        return (us,ts)
+
+  (users, tweets) <- runHaskeyT readAction dbOld
+    defFileStoreConfig
+  let
+    addAction = transact_ $ \root -> root &
+      schemaTree . schemaTweets %%~ insertTreeMany (Map.fromList tweets)
+      >>= schemaTree . schemaUsers %%~ insertTreeMany
+          (Map.fromList $ map modifyUsers users)
+      >>= commit_
+    modifyUsers :: (Text, UserDataOld) -> (Text, UserData)
+    modifyUsers = _2 %~ (\u -> User ( _userNameOld u) Nothing)
+  runHaskeyT addAction db
+    defFileStoreConfig

@@ -42,11 +42,19 @@ data OldSchema = OldSchema
 
 type family User a
 type instance User CurrentSchema = UserData
-type instance User OldSchema = UserData
-data UserData = User {
-    _userName :: !Text
+type instance User OldSchema = UserDataOld
+data UserDataOld = UserOld {
+    _userNameOld :: !Text
   } deriving (Generic, Show, Typeable)
 
+data UserData = User {
+    _userName :: !Text
+  , _userEmail :: Maybe Text
+  } deriving (Generic, Show, Typeable)
+
+
+instance Binary (UserDataOld)
+instance Value (UserDataOld)
 
 instance Binary (UserData)
 instance Value (UserData)
