@@ -55,7 +55,7 @@ instance Value (TweetData)
 
 data SchemaTree a = SchemaTree {
     _schemaTweets :: Tree Int64 (Tweet a)
-    , _schemaUsers :: Tree Int64 (User a)
+    , _schemaUsers :: Tree Text (User a)
     } deriving (Generic)
 -- instance Show1 SchemaTree
 deriving instance Show (SchemaTree CurrentSchema)
@@ -76,6 +76,10 @@ makeLenses ''Schema
   -- | Insert or update a tweet.
 insertTweet :: AllocM n => Int64 -> Tweet CurrentSchema -> Schema -> n Schema
 insertTweet k v = schemaTree . schemaTweets %%~ insertTree k v
+
+-- | Insert a new user.
+insertUser :: AllocM n => Text -> User CurrentSchema -> Schema -> n Schema
+insertUser k v = schemaTree . schemaUsers %%~ insertTree k v
 
 emptySchema :: Schema
 emptySchema = Schema (SchemaTree Tree.empty Tree.empty)
@@ -115,9 +119,14 @@ app = insertDefaultTweets >> printTweetsWithUser
 insertDefaultTweets :: App ()
 insertDefaultTweets = do
     transact_ $ \schema ->
+        foldlM (flip $ uncurry insertUser) schema users
+        >>= commit_
+    transact_ $ \schema ->
         foldlM (flip $ uncurry insertTweet) schema tweets
         >>= commit_
   where
+    users = [("foo", User "Foo"),
+             ("bar", User "Bar")]
     tweets = [(1, Tweet "foo" "Hey, I'm Foo!" Tree.empty),
               (2, Tweet "bar" "Hey, I'm Bar!" Tree.empty),
               (3, Tweet "foo" "I like you, Bar!" Tree.empty)]
@@ -130,7 +139,10 @@ printTweetsWithUser :: App ()
 printTweetsWithUser = do
     tweets <- map snd <$> transactReadOnly queryAllTweets
     liftIO $ print tweets
-  --   users  <- mapM (\t -> transactReadOnly $ queryUser (_tweetUser t)) tweets
+    users  <- mapM (\t -> transactReadOnly $
+                     (\r -> lookupTree (_tweetUser t) (r ^. schemaTree . schemaUsers)))
+                     tweets
+    liftIO $ print users
   --   mapM_ print' $ zip users tweets
   -- where
   --   print' (Just user, tweet) = liftIO . putStrLn $ unpack (_userName user) ++ ": " ++ unpack (_tweetContent tweet) ++ (show $ _tweetReplies tweet)
